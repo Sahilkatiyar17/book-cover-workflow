@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     pexels_api_key: str = ""
     serpapi_api_key: str = ""
     apify_api_key: str = ""
+    pixabay_api_key: str = ""
 
     # App
     app_env: str = "dev"

@@ -6,3 +6,6 @@ python-dotenv
 streamlit
 requests
 langsmith
+torch
+transformers<5.0
+pillow
