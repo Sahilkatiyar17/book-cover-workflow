@@ -5,10 +5,12 @@ from langgraph.graph import StateGraph, END
 from langgraph.types import Command
 
 from app.db.checkpointer import CheckpointerFactory
+from app.graph.edges import BranchRouter
 from app.graph.nodes import SelectionNode
 from app.graph.state import GraphState
 from app.services.image_search import ImageSearchNode
 from app.services.ranking import RankingNode
+from app.utils.constants import FeedbackBranch
 from app.utils.exception import AgentException
 from app.utils.logger import logging
 
@@ -22,6 +24,7 @@ class GraphBuilder:
         self.image_search_node = ImageSearchNode()
         self.ranking_node = RankingNode()
         self.selection_node = SelectionNode()
+        self.branch_router = BranchRouter()
         self.checkpointer = CheckpointerFactory.get_sqlite_checkpointer()
 
     def build(self):
@@ -35,7 +38,17 @@ class GraphBuilder:
             graph.set_entry_point("image_search")
             graph.add_edge("image_search", "ranking")
             graph.add_edge("ranking", "selection")
-            graph.add_edge("selection", END)  # temporary — Phase 4 replaces this with branch logic
+
+            graph.add_conditional_edges(
+                "selection",
+                self.branch_router,
+                {
+                    FeedbackBranch.NO_FEEDBACK: END,
+                    FeedbackBranch.TEXT_FEEDBACK: END,
+                    FeedbackBranch.USER_IMAGE_UPLOAD: END,
+                    FeedbackBranch.TEXT_AND_IMAGE: END,
+                },
+            )
 
             compiled = graph.compile(checkpointer=self.checkpointer)
             logger.info("Graph compiled successfully with SQLite checkpointer")
@@ -55,7 +68,6 @@ class GraphRunner:
         self.graph = builder.build()
 
     def run(self, initial_state: dict) -> dict:
-        """Starts a new run. Returns thread_id (needed to resume) and the result state."""
         thread_id = str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
 
@@ -68,7 +80,6 @@ class GraphRunner:
             raise AgentException(e, sys) from e
 
     def resume(self, thread_id: str, resume_payload: dict) -> dict:
-        """Resumes a paused run with the user's selection/feedback."""
         config = {"configurable": {"thread_id": thread_id}}
 
         try:
@@ -81,7 +92,7 @@ class GraphRunner:
 
     def _cleanup_if_complete(self, thread_id: str, config: dict) -> None:
         snapshot = self.graph.get_state(config)
-        if not snapshot.next:  # empty means the graph reached END, not paused
+        if not snapshot.next:
             CheckpointerFactory.clear_thread(self.builder.checkpointer, thread_id)
         else:
             logger.info(f"Thread {thread_id} paused (human-in-the-loop) — checkpoint preserved")

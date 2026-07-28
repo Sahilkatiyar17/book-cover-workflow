@@ -48,3 +48,4 @@ class FeedbackBranch:
     NO_FEEDBACK = "no_feedback"
     TEXT_FEEDBACK = "text_feedback"
     USER_IMAGE_UPLOAD = "user_image_upload"
+    TEXT_AND_IMAGE = "text_and_image"
