@@ -1,677 +1,273 @@
-# Book Cover Creator
-## Project Guide
+# Book Cover Workflow
+
+### An agentic pipeline that turns a text prompt into a print-ready book cover, with a human-in-the-loop selection step in the middle
+
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Agent%20Orchestration-1C3C3C?style=flat)](https://langchain-ai.github.io/langgraph/)
+[![Groq](https://img.shields.io/badge/Groq-LLM%20%2B%20Vision-F55036?style=flat)](https://groq.com)
+[![HuggingFace](https://img.shields.io/badge/HuggingFace-FLUX.1--schnell-FFD21E?style=flat)](https://huggingface.co)
+[![Streamlit](https://img.shields.io/badge/Streamlit-Frontend-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://streamlit.io)
+
+[Why this project](#why-this-project) · [Architecture](#architecture) · [Pipeline nodes](#pipeline-nodes) · [Project structure](#project-structure) · [Setup](#setup--configuration) · [Usage](#how-to-use-it) · [API keys](#apis--keys-needed) · [Tuning](#tuning-cost-vs-quality) · [Deployment](#is-this-production-ready) · [Tech stack](#tech-stack)
 
 ---
 
-# Overview
+## Why this project
 
-The Book Cover Creator is an AI-powered workflow that helps users generate professional-looking book covers from a simple text description.
+[#why-this-project](#why-this-project)
 
-Instead of directly asking an AI to create an image, the system first gathers visual inspiration from real-world images, lets the user choose what they like, understands those images using AI, combines everything into a refined prompt, and finally generates an original book cover.
+Most "AI book cover generator" demos are a single text-to-image call — type a prompt, get an image, hope it looks right. This project treats it as a proper design workflow instead:
 
-The goal of this workflow is to improve the quality of generated book covers by using reference images and human feedback before image generation.
+1. Search the web for reference images that match the brief
+2. Rank them by actual relevance using CLIP, not just keyword matching
+3. Let a human pick favorites and say *why* they like them
+4. Turn that selection + feedback into a rich, unified prompt
+5. Generate the final cover from that refined prompt
 
----
-
-# High-Level Workflow
-
-The project follows a sequential workflow where every stage performs exactly one task.
-
-```
-User Prompt
-      │
-      ▼
-Search Reference Images
-      │
-      ▼
-Download Images
-      │
-      ▼
-Rank Images
-      │
-      ▼
-User Selects Images
-      │
-      ▼
-Image Understanding
-      │
-      ▼
-Prompt Summarization
-      │
-      ▼
-Book Cover Generation
-      │
-      ▼
-Generated Cover
-```
-
-Every stage updates a shared state object.
-
-Instead of passing dozens of variables between functions, the project stores all intermediate information inside one shared dictionary called the **LangGraph State**.
-
-Each node simply reads the information it needs, performs its task, writes its output back into the state, and passes it to the next node.
+The interesting engineering problem isn't "call an image model" — it's the middle part: pausing a running agent graph mid-execution to wait for a real person, then resuming it later with their input, without losing any state.
 
 ---
 
-# Project Structure
+## Architecture
+
+[#architecture](#architecture)
 
 ```
-app/
-│
-├── graph/
-│   ├── builder.py
-│   ├── nodes.py
-│
-├── services/
-│   ├── image_search.py
-│   ├── ranking.py
-│   ├── image_understanding.py
-│   ├── summarization.py
-│   ├── generation.py
-│
-├── db/
-│   ├── checkpointer.py
-│
-├── utils/
-│   ├── config.py
-│   ├── constants.py
-│   ├── logger.py
-│   ├── exception.py
-│
-frontend/
-│
-storage/
-│
-logs/
-│
-.env
+                User Prompt (+ dimension preset)
+                          │
+                          ▼
+        1. Image Search Node
+   (Unsplash + Pexels + SerpAPI → download locally)
+                          │
+                          ▼
+        2. Ranking Node
+   (Local CLIP model: cosine similarity, prompt vs. image)
+                          │
+                          ▼
+        3. Selection Node  ◄── Human-in-the-Loop interrupt()
+   (Graph pauses. User picks ≤5 images, adds feedback,
+    or uploads their own reference image)
+                          │
+                     [ Resumed ]
+                          ▼
+        4. Branch Router
+   (no_feedback / text_feedback / image_upload / both)
+                          │
+                          ▼
+        5. Image Understanding Node
+   (Groq Vision-Language model captions selected images)
+                          │
+                          ▼
+        6. Summarization Node
+   (Groq LLM merges prompt + captions + feedback
+    into one condensed generation prompt)
+                          │
+                          ▼
+        7. Generation Node
+   (Hugging Face FLUX.1-schnell renders the final cover)
+                          │
+                          ▼
+              Final Book Cover + Metadata
 ```
 
-Each folder has a specific responsibility.
+State flows through a single shared `GraphState` object (LangGraph), and every node reads a slice of it and returns a partial update. A SQLite-backed checkpointer persists this state at every step, so the interrupt in step 3 is a real pause — not a blocking wait — and the graph can be resumed hours later from a completely different process.
 
 ---
 
-# Folder Explanation
+## Pipeline nodes
 
-## app/
+[#pipeline-nodes](#pipeline-nodes)
 
-Contains the complete backend logic of the application.
+| # | Node | Class | Reads | Writes | What it does |
+|---|------|-------|-------|--------|---------------|
+| 1 | `image_search` | `ImageSearchNode` | `prompt` | `search_results` | Queries Unsplash, Pexels, and SerpAPI in parallel, downloads results locally, hash-named to avoid re-downloading duplicates |
+| 2 | `ranking` | `RankingNode` | `prompt`, `search_results` | `ranked_results` | Embeds the prompt and every image with CLIP (`openai/clip-vit-base-patch32`), scores by cosine similarity, caches embeddings to disk |
+| 3 | `selection` | `SelectionNode` | `ranked_results` | `selected_images`, `feedback`, `user_uploaded_image` | Interrupts the graph and hands control back to the UI until the user responds |
+| 4 | *(router)* | `BranchRouter` | resumed state | routes to `understanding` | Classifies the response as no-feedback / text / image-upload / both |
+| 5 | `understanding` | `ImageUnderstandingNode` | `selected_images`, `user_uploaded_image` | `image_descriptions` | Groq Vision model writes detailed style/composition captions for each selected image |
+| 6 | `summarization` | `SummarizationNode` | `prompt`, `image_descriptions`, `feedback` | `summarized_prompt` | Groq LLM (Llama 3.3 70B) compresses prompt + captions + feedback into one coherent generation prompt |
+| 7 | `generation` | `GenerationNode` | `summarized_prompt`, reference images | `generated_cover_path` | Sends the final prompt to FLUX.1-schnell (or Gemini/NVIDIA, if enabled) and saves the rendered cover |
 
-Everything related to searching, ranking, AI models, graph execution, utilities, and configuration lives here.
-
----
-
-## graph/
-
-This is the heart of the workflow.
-
-Instead of calling every function manually, LangGraph controls the execution order.
-
-It decides
-
-- what runs first
-- what runs next
-- when the workflow should pause
-- when it should resume
-- what information should be shared
-
-### builder.py
-
-Creates the complete workflow.
-
-Think of this as drawing a flowchart.
-
-Example
-
-```
-Search
-
-↓
-
-Ranking
-
-↓
-
-Pause for User
-
-↓
-
-Caption Images
-
-↓
-
-Summarize
-
-↓
-
-Generate
-```
-
-builder.py connects all those pieces together.
+Every node is a plain Python class with a `__call__(self, state: dict) -> dict` method — that's the entire contract LangGraph needs to treat it as a graph node, no framework-specific base class required.
 
 ---
 
-### nodes.py
+## Project structure
 
-Contains the actual nodes used by LangGraph.
-
-Each node performs exactly one job.
-
-Examples
-
-- Search node
-- Ranking node
-- Pause node
-- Summarization node
-- Generation node
-
-Each node receives
+[#project-structure](#project-structure)
 
 ```
-State
-
-↓
-
-Process
-
-↓
-
-Updated State
+book-cover-workflow/
+├── app/
+│   ├── db/
+│   │   └── checkpointer.py         # SQLite checkpointer for LangGraph thread state
+│   ├── graph/
+│   │   ├── builder.py              # StateGraph assembly + run/resume lifecycle
+│   │   ├── edges.py                # BranchRouter — conditional routing after selection
+│   │   ├── nodes.py                # SelectionNode (human-in-the-loop interrupt)
+│   │   └── state.py                # GraphState, ImageResult, UserFeedback type defs
+│   ├── services/
+│   │   ├── image_search.py         # Unsplash / Pexels / SerpAPI / Pixabay / Pinterest clients
+│   │   ├── ranking.py              # CLIP embeddings + cosine-similarity ranking
+│   │   ├── image_understanding.py  # Groq Vision captioning
+│   │   ├── summarization.py        # Groq text summarization
+│   │   └── generation.py           # HuggingFace / Gemini / NVIDIA image generation
+│   └── utils/
+│       ├── config.py               # Pydantic Settings — typed env vars
+│       ├── constants.py            # Tunable defaults (resolutions, model names, limits)
+│       ├── exception.py            # AgentException — custom error wrapper
+│       ├── logger.py               # Shared logger setup
+│       └── tracing.py              # LangSmith tracing hooks
+├── frontend/
+│   └── streamlit_app.py            # Streamlit UI
+├── storage/
+│   ├── raw_images/                 # Downloaded + user-uploaded reference images
+│   ├── generated_covers/           # Final rendered covers
+│   └── checkpoints.db              # LangGraph thread state (auto-cleared on success)
+├── requirements.txt
+└── setup.py
 ```
 
 ---
 
-# services/
+## Setup & configuration
 
-Every AI model or external API is isolated inside this folder.
+[#setup--configuration](#setup--configuration)
 
-This makes the project modular.
+```bash
+git clone <your-repo-url>
+cd book-cover-workflow
 
-If one provider changes, only one file needs to be modified.
+conda create -n book-cover python=3.11 -y
+conda activate book-cover
 
----
-
-## image_search.py
-
-Responsible for finding reference images.
-
-Current providers include
-
-- Unsplash
-- Pexels
-- SerpAPI (Google Images)
-
-Each provider follows the same interface.
-
-```
-User Prompt
-
-↓
-
-Search Provider
-
-↓
-
-Image URLs
-
-↓
-
-Downloaded Images
-```
-
-This design allows new providers to be added without changing the rest of the application.
-
----
-
-## ranking.py
-
-After downloading images, not every result is useful.
-
-This service uses CLIP to compare
-
-```
-User Prompt
-
-with
-
-Each Image
-```
-
-The similarity score determines how closely the image matches the prompt.
-
-The images are then sorted from best to worst.
-
-This step runs locally and does not require an external API.
-
----
-
-## image_understanding.py
-
-Once the user chooses reference images, this service asks an AI vision model to describe them.
-
-Instead of simply saying
-
-> "Knight"
-
-the model produces rich descriptions like
-
-> "A lone knight wearing weathered silver armor stands before a ruined castle beneath a crimson moon. Dramatic lighting and deep shadows create a dark fantasy atmosphere."
-
-These descriptions become part of the final generation prompt.
-
----
-
-## summarization.py
-
-This stage combines
-
-- Original prompt
-- AI image descriptions
-- User feedback
-
-into one clean instruction.
-
-Instead of passing many paragraphs into the generation model,
-
-everything is condensed into one optimized prompt.
-
----
-
-## generation.py
-
-This is the final stage.
-
-The summarized prompt is sent to an image generation model.
-
-Current implementation supports
-
-- Hugging Face FLUX
-- Google Gemini (prepared)
-- NVIDIA (under development)
-
-Only one provider is active at a time.
-
----
-
-# utils/
-
-Contains reusable components used throughout the project.
-
----
-
-## config.py
-
-Responsible for reading environment variables.
-
-Instead of writing
-
-```python
-os.environ["API_KEY"]
-```
-
-throughout the project,
-
-every module simply calls
-
-```python
-get_settings()
-```
-
-Advantages
-
-- Centralized configuration
-- Automatic type validation
-- Cleaner code
-- Easier deployment
-
----
-
-## constants.py
-
-Contains all configurable values.
-
-Examples
-
-- Number of images
-- Delay between API calls
-- Model names
-- Directory paths
-
-Changing constants here automatically affects the entire project.
-
----
-
-## logger.py
-
-Creates a centralized logging system.
-
-Instead of printing messages,
-
-the project records
-
-- Information
-- Warnings
-- Errors
-
-along with timestamps.
-
-Logs are stored inside
-
-```
-logs/
-```
-
-which makes debugging much easier.
-
----
-
-## exception.py
-
-Provides custom exceptions.
-
-Instead of displaying only
-
-```
-KeyError
-```
-
-or
-
-```
-TypeError
-```
-
-the project reports
-
-- File name
-- Line number
-- Original error
-
-This greatly simplifies debugging.
-
----
-
-# frontend/
-
-Contains the Streamlit application.
-
-The frontend allows users to
-
-- Enter prompts
-- View ranked images
-- Select reference images
-- Upload their own image
-- Provide feedback
-- Generate book covers
-
-The frontend does not perform AI tasks.
-
-It only communicates with the backend workflow.
-
----
-
-# storage/
-
-Stores temporary project data.
-
-Examples
-
-- Downloaded images
-- Generated covers
-- Workflow checkpoints
-
----
-
-# logs/
-
-Stores log files created during execution.
-
-Every application run creates a new log.
-
-This helps identify errors without reading terminal output.
-
----
-
-# The Shared State
-
-Instead of creating many variables,
-
-the workflow stores everything inside one dictionary.
-
-Example
-
-```python
-{
-    "prompt": "...",
-    "image_results": [...],
-    "ranked_images": [...],
-    "selected_images": [...],
-    "image_descriptions": {...},
-    "feedback": [...],
-    "summarized_prompt": "...",
-    "generated_image": "..."
-}
-```
-
-Every node updates only the part it owns.
-
----
-
-# Provider Architecture
-
-Every external service follows the same design.
-
-```
-Provider
-
-↓
-
-Receive Request
-
-↓
-
-Call External API
-
-↓
-
-Return Standard Output
-```
-
-For example,
-
-Image Search providers all return
-
-```
-{
-    url,
-    source,
-    metadata
-}
-```
-
-regardless of whether they come from
-
-- Unsplash
-- Pexels
-- Google Images
-
-This keeps the rest of the project independent of specific providers.
-
----
-
-# Error Handling
-
-Every service uses
-
-```
-try
-
-↓
-
-except
-
-↓
-
-AgentException
-```
-
-Unexpected failures are logged with
-
-- file name
-- line number
-- original message
-
-rather than causing silent crashes.
-
----
-
-# Logging
-
-The application records
-
-- Information logs
-- Warning logs
-- Error logs
-
-Example
-
-```
-Image downloaded
-
-↓
-
-Image ranked
-
-↓
-
-Prompt summarized
-
-↓
-
-Generation complete
-```
-
-Every log entry contains
-
-- timestamp
-- module name
-- log level
-
-making debugging much easier.
-
----
-
-# Workflow Checkpointing
-
-Long AI workflows may fail because of
-
-- API limits
-- Internet interruptions
-- Application crashes
-
-Instead of restarting everything,
-
-the project saves progress after each stage.
-
-If interrupted,
-
-execution resumes from the last completed node.
-
-This greatly improves reliability.
-
----
-
-# APIs Used
-
-| Purpose | Provider |
-|----------|----------|
-| Image Search | Unsplash |
-| Image Search | Pexels |
-| Image Search | Google Images (SerpAPI) |
-| Vision Model | Groq (Qwen) |
-| Summarization | Groq (Llama) |
-| Image Generation | Hugging Face FLUX |
-| Future Support | Google Gemini |
-| Future Support | NVIDIA |
-
----
-
-# Environment Variables
-
-All API keys are stored inside
-
-```
-.env
-```
-
-No API keys are hardcoded into the project.
-
-This improves security and simplifies deployment.
-
----
-
-# Running the Project
-
-Install dependencies
-
-```
 pip install -r requirements.txt
+pip install -e .
 ```
 
-Configure
+Create a `.env` file in the project root:
 
+```bash
+# Image search
+UNSPLASH_API_KEY=your_unsplash_key
+PEXELS_API_KEY=your_pexels_key
+SERPAPI_API_KEY=your_serpapi_key
+PIXABAY_API_KEY=your_pixabay_key        # optional, disabled by default
+APIFY_API_KEY=your_apify_key            # optional, disabled by default
+
+# Understanding + summarization
+GROQ_API_KEY=your_groq_key
+
+# Generation
+HUGGINGFACE_API_KEY=your_hf_token
+GEMINI_API_KEY=your_gemini_key          # optional, disabled by default
+NVIDIA_API_KEY=your_nvidia_key          # optional, experimental
+
+# Observability (optional)
+LANGSMITH_API_KEY=your_langsmith_key
 ```
-.env
-```
 
-with all required API keys.
+Run it:
 
-Run
-
-```
+```bash
 streamlit run frontend/streamlit_app.py
 ```
 
-The browser interface opens automatically.
+---
+
+## How to use it
+
+[#how-to-use-it](#how-to-use-it)
+
+1. **Describe the cover** — type your prompt (e.g. *"dark fantasy castle at dusk, dragon silhouette, red sky"*) and pick a print dimension preset. Click **Search images**.
+2. **Pick favorites** — the graph pauses once ranked results come back. Check up to 5 images, add short notes per image (*"like the lighting on this one"*), and optionally drag in your own reference image. Click **Generate cover**.
+3. **Get your cover** — the graph resumes, captions your selections, merges everything into one prompt, and renders the final cover. Expand the debug panels to see the exact prompt and captions that were used.
 
 ---
 
-# Current Features
+## APIs & keys needed
 
-- Multi-provider image search
-- CLIP-based image ranking
-- AI image understanding
-- User feedback integration
-- Prompt summarization
-- AI image generation
-- Logging
-- Error handling
-- Workflow checkpointing
-- Provider-based architecture
+[#apis--keys-needed](#apis--keys-needed)
 
----
+| Node | Service | Env var | Status |
+|------|---------|---------|--------|
+| `image_search` | Unsplash | `UNSPLASH_API_KEY` | active |
+| `image_search` | Pexels | `PEXELS_API_KEY` | active |
+| `image_search` | SerpAPI | `SERPAPI_API_KEY` | active — 250 searches/month free tier |
+| `image_search` | Pixabay | `PIXABAY_API_KEY` | built, disabled (CDN rate-limits aggressively) |
+| `image_search` | Apify (Pinterest) | `APIFY_API_KEY` | built, disabled (unofficial scraper, ToS risk) |
+| `ranking` | CLIP (`openai/clip-vit-base-patch32`) | — | runs locally, no API key |
+| `understanding` | Groq Vision (`qwen/qwen3.6-27b`) | `GROQ_API_KEY` | active |
+| `summarization` | Groq text (`llama-3.3-70b-versatile`) | `GROQ_API_KEY` | same key as above |
+| `generation` | Hugging Face (`FLUX.1-schnell`) | `HUGGINGFACE_API_KEY` | active, default generator |
+| `generation` | Gemini (`gemini-2.5-flash-image`) | `GEMINI_API_KEY` | built, disabled (requires GCP billing) |
+| `generation` | NVIDIA NIM (Qwen-Image-Edit) | `NVIDIA_API_KEY` | built, experimental/unverified |
+| tracing | LangSmith | `LANGSMITH_API_KEY` | optional, observability only |
 
-# Future Improvements
-
-Possible future enhancements include
-
-- Multiple image generation models running simultaneously
-- Automatic prompt optimization
-- Style presets
-- Character consistency across multiple covers
-- Fine-tuned image ranking
-- Cloud deployment
-- Team collaboration
-- User accounts
-- Generation history
-- Image editing after generation
+> **Note on SerpAPI vs. Google Custom Search:** SerpAPI was chosen over the raw Google Custom Search API because it returns clean, structured JSON without needing a separate Google Cloud Console setup — faster to wire up when working under a tight timeline.
 
 ---
 
-# Conclusion
+## Tuning cost vs. quality
 
-The Book Cover Creator is designed as a modular AI workflow rather than a single AI model.
+[#tuning-cost-vs-quality](#tuning-cost-vs-quality)
 
-Every stage performs one responsibility, making the project easier to understand, debug, extend, and maintain.
+All of these live in `app/utils/constants.py`:
 
-Because every service is isolated behind providers and coordinated using LangGraph, new AI models and external services can be integrated with minimal changes to the overall architecture.
+**To reduce API cost:**
+- `ImageUnderstandingConfig.MAX_IMAGES_TO_DESCRIBE` (default `5`) — lower to 2–3 to cut Groq Vision calls, since it's billed per image.
+- `ImageUnderstandingConfig.MAX_TOKENS` (default `1500`) — lower to 500–800 to keep captions (and downstream prompt size) shorter.
+
+**To improve output quality:**
+- `ImageSearchConfig.DEFAULT_RESULTS_PER_QUERY` (default `10`) — raise to 15–20 for a bigger candidate pool before ranking.
+- `GenerationConfig` provider — swap between:
+  - **HuggingFaceProvider (FLUX.1-schnell)** — active by default, fast and free, no uptime guarantee.
+  - **GeminiProvider** — accepts multiple reference images directly for closer matches to your selections; requires GCP billing to be enabled.
+  - **QwenEditProvider (NVIDIA NIM)** — image-to-image editing of a selected reference; experimental.
+
+---
+
+## Is this production-ready?
+
+[#is-this-production-ready](#is-this-production-ready)
+
+No — this is a solid functional prototype, not a deployable service, for four concrete reasons:
+
+1. **CLIP loads into memory per server process.** Concurrent users on one instance will exhaust RAM fast.
+2. **SQLite checkpointing doesn't scale horizontally.** Multiple server instances can't share a local `.db` file, so a paused session on one server is invisible to another.
+3. **Local file storage for images.** Every search result and generated cover writes to disk — this fills up fast under real traffic.
+4. **No user accounts or auth.** There's no login, no per-user history, no rate limiting per user.
+
+The rough scaling path, if this were to go further: shared CLIP inference behind a small API → move storage to S3/GCS → move checkpointing to managed Postgres/Redis → split frontend (React/Next.js) from backend (FastAPI) → move generation to serverless GPU endpoints (Replicate/RunPod) behind a task queue once traffic justifies it.
+
+---
+
+## Tech stack
+
+[#tech-stack](#tech-stack)
+
+| Layer | Choice |
+|-------|--------|
+| Agent orchestration | LangGraph (with SQLite checkpointing + `interrupt()`) |
+| Image search | Unsplash, Pexels, SerpAPI (Pixabay, Pinterest/Apify built but disabled) |
+| Ranking | Local CLIP (`openai/clip-vit-base-patch32`) + cosine similarity |
+| Vision captioning | Groq (Qwen-VL) |
+| Prompt summarization | Groq (Llama 3.3 70B) |
+| Image generation | Hugging Face (FLUX.1-schnell), Gemini & NVIDIA NIM as alternates |
+| Frontend | Streamlit |
+| Persistence | SQLite (checkpoints), local filesystem (images) |
+| Tracing | LangSmith (optional) |
+
+---
+
+## What's next
+
+[#whats-next](#whats-next)
+
+- **Query decomposition** for compound prompts — split a multi-concept prompt (e.g. "castle + dragon + moody lighting") into sub-queries before search/ranking, instead of relying on each provider's own fuzzy matching to sort it out.
+- **Real-person-name handling** — flag prompts referencing named public figures before they reach search/generation, given likeness and licensing considerations.
+- **Migrate checkpointing and storage** to Postgres and object storage as a first step toward the multi-instance deployment path described above.
+
+---
+
+Built as a two-day prototype exploring human-in-the-loop agent workflows with LangGraph — not a production system.
