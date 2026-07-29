@@ -37,7 +37,16 @@ class Settings(BaseSettings):
     # App
     app_env: str = "dev"
     mem0_api_key: str = ""
-
+    
+        # LLM providers
+    groq_api_key: str
+    groq_model: str = "llama-3.3-70b-versatile"
+    nvidia_api_key: str = ""
+    gemini_api_key: str = ""
+    cohere_api_key: str = ""
+    openai_api_key: str = ""
+   
+    huggingface_api_key: str = ""
 
 @lru_cache
 def get_settings() -> Settings:

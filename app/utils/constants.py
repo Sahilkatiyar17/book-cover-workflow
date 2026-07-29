@@ -49,3 +49,25 @@ class FeedbackBranch:
     TEXT_FEEDBACK = "text_feedback"
     USER_IMAGE_UPLOAD = "user_image_upload"
     TEXT_AND_IMAGE = "text_and_image"
+    
+class GenerationConfig:
+    """Tunables for the image generation step."""
+    MAX_REFERENCE_IMAGES = 5
+    GEMINI_MODEL_ID = "gemini-2.5-flash-image"
+    QWEN_EDIT_MODEL_ID = "qwen/qwen-image-edit-2511"
+    HF_MODEL_ID = "black-forest-labs/FLUX.1-schnell"
+    GENERATION_TIMEOUT_SECONDS = 60
+    MAX_RETRIES = 3
+    RETRY_BACKOFF_SECONDS = 2
+    
+class ImageUnderstandingConfig:
+    """Tunables for the image captioning/understanding step."""
+    MODEL_ID = "qwen/qwen3.6-27b"
+    MAX_TOKENS = 1500
+    CAPTION_PROMPT = "Describe this image in detail, including subject, mood, color palette, and composition."
+    MAX_IMAGES_TO_DESCRIBE = 3
+    
+class SummarizationConfig:
+    """Tunables for the prompt-summarization step."""
+    MODEL_ID = "llama-3.3-70b-versatile"
+    PRE_REQUEST_DELAY_SECONDS = 3

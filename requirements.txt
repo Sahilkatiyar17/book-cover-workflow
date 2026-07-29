@@ -10,3 +10,7 @@ torch
 transformers<5.0
 pillow
 langgraph-checkpoint-sqlite
+huggingface_hub
+openai
+together
+dashscope

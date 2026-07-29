@@ -1,42 +1,39 @@
-# from app.graph.builder import GraphBuilder
+# from app.services.generation import GeminiProvider
 
-# graph = GraphBuilder().build()
-# config = {"configurable": {"thread_id": "test-run-1"}}
-# result = graph.invoke(
-#     {"prompt": "red moon and cat", "dimension_preset": "6x9"},
-#     config=config,
+# provider = GeminiProvider()
+# result = provider.generate(
+#     prompt="Image 1: use as reference for mood and lighting. Create a moody fantasy book cover.",
+#     reference_image_paths=["storage/raw_images/serpapi_7840891ebf6d.jpg"],  # use a real path from your storage folder
+#     output_path="storage/generated_covers/test_gemini.jpg",
 # )
-
-# print(len(result["ranked_results"]))
-# print(result["ranked_results"][0])
-
-# from app.graph.builder import GraphBuilder, GraphRunner
-
-# runner = GraphRunner(GraphBuilder())
-# result = runner.run({"prompt": "night waterfall", "dimension_preset": "6x9"})
-
-# print(len(result["ranked_results"]))
-# print(result["ranked_results"][0]['score'])
-# print(result["ranked_results"][1]['score'])
+# print(result)
 
 
-from app.graph.builder import GraphBuilder, GraphRunner
+# from app.services.generation import QwenEditProvider
 
-runner = GraphRunner(GraphBuilder())
+# provider = QwenEditProvider()
+# result = provider.generate(
+#     prompt="Transform into a moody fantasy book cover style.",
+#     reference_image_paths=["storage/raw_images/serpapi_7840891ebf6d.jpg"],
+#     output_path="storage/generated_covers/test_qwen.jpg",
+# )
+# print(result)
 
-# Step 1: start the run — it should pause at SelectionNode
-result = runner.run({"prompt": "night waterfall", "dimension_preset": "6x9"})
-print(result["state"])  # should show an '__interrupt__' key with the ranked_results payload
-thread_id = result["thread_id"]
+# from google import genai
+# import os
 
-# Check the DB here — this thread's rows should still exist, NOT deleted, since it's paused
+# client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
-# Step 2: simulate the user picking images and giving feedback
-resumed = runner.resume(thread_id, {
-    "selected_images": ["storage/raw_images/unsplash_abc123.jpg"],
-    "feedback": [{"image_local_path": "storage/raw_images/unsplash_abc123.jpg", "liked_attributes": "liked the moody lighting"}],
-    "user_uploaded_image": None,
-})
-print(resumed["state"])
+# for model in client.models.list():
+#     print(model.name)
 
-# Check the DB again — this thread's rows should now be gone, since it reached END
+
+from app.services.generation import HuggingFaceProvider
+
+result = HuggingFaceProvider().generate(
+    prompt="Create a moody fantasy book cover provided image.",
+    reference_image_paths=["storage/raw_images/serpapi_7840891ebf6d.jpg","storage/raw_images/upload_be3dd733-b6ec-4ccf-b83c-151f6cfe1e69.png"],
+    output_path="storage/generated_covers/test_hf.jpg",
+)
+print(result)
+

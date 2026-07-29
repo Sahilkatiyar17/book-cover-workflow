@@ -13,6 +13,9 @@ from app.services.ranking import RankingNode
 from app.utils.constants import FeedbackBranch
 from app.utils.exception import AgentException
 from app.utils.logger import logging
+from app.services.generation import GenerationNode
+from app.services.image_understanding import ImageUnderstandingNode
+from app.services.summarization import SummarizationNode
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,10 @@ class GraphBuilder:
         self.selection_node = SelectionNode()
         self.branch_router = BranchRouter()
         self.checkpointer = CheckpointerFactory.get_sqlite_checkpointer()
+        self.generation_node = GenerationNode()
+        self.understanding_node = ImageUnderstandingNode()
+        self.summarization_node = SummarizationNode()
+
 
     def build(self):
         try:
@@ -34,6 +41,9 @@ class GraphBuilder:
             graph.add_node("image_search", self.image_search_node)
             graph.add_node("ranking", self.ranking_node)
             graph.add_node("selection", self.selection_node)
+            graph.add_node("understanding", self.understanding_node)
+            graph.add_node("summarization", self.summarization_node)
+            graph.add_node("generation", self.generation_node)
 
             graph.set_entry_point("image_search")
             graph.add_edge("image_search", "ranking")
@@ -43,12 +53,15 @@ class GraphBuilder:
                 "selection",
                 self.branch_router,
                 {
-                    FeedbackBranch.NO_FEEDBACK: END,
-                    FeedbackBranch.TEXT_FEEDBACK: END,
-                    FeedbackBranch.USER_IMAGE_UPLOAD: END,
-                    FeedbackBranch.TEXT_AND_IMAGE: END,
+                    FeedbackBranch.NO_FEEDBACK: "understanding",
+                    FeedbackBranch.TEXT_FEEDBACK: "understanding",
+                    FeedbackBranch.USER_IMAGE_UPLOAD: "understanding",
+                    FeedbackBranch.TEXT_AND_IMAGE: "understanding",
                 },
             )
+            graph.add_edge("understanding", "summarization")
+            graph.add_edge("summarization", "generation")
+            graph.add_edge("generation", END)
 
             compiled = graph.compile(checkpointer=self.checkpointer)
             logger.info("Graph compiled successfully with SQLite checkpointer")

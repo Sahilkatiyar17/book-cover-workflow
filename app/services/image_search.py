@@ -212,10 +212,10 @@ class ImageSearchAggregator:
 
     def __init__(self):
         self.providers = {
-            "unsplash": (UnsplashProvider(), 1),
-            "pexels": (PexelsProvider(), 1),
+            "unsplash": (UnsplashProvider(), 2),
+            "pexels": (PexelsProvider(), 2),
             #"pixabay": (PixabayProvider(), 1),
-            "serpapi": (SerpApiProvider(), 1),
+            "serpapi": (SerpApiProvider(), 2),
             # Pinterest: kept for demo purposes only — slow (residential proxy scraping),
             # unofficial/ToS-fragile. Commented out of the default run; uncomment to include.
             # "pinterest": (PinterestProvider(), 1),

@@ -42,3 +42,6 @@ class GraphState(TypedDict):
 
     # Error/status tracking
     error: Optional[str]
+    
+    image_descriptions: Optional[dict]  # {local_path: caption_text}
+    summarized_prompt: Optional[str]

@@ -44,7 +44,7 @@ class BookCoverApp:
             st.rerun()
 
     def _render_selection_stage(self):
-        st.subheader("Select images you like")
+        st.subheader("Select images you like (max 5)")
 
         selected_paths = []
         feedback_entries = []
@@ -62,7 +62,16 @@ class BookCoverApp:
                 if text.strip():
                     feedback_entries.append({"image_local_path": img["local_path"], "liked_attributes": text.strip()})
 
-        uploaded_file = st.file_uploader("Or upload your own reference image (optional)", type=["jpg", "jpeg", "png"])
+        remaining_slots = 5 - len(selected_paths)
+        uploaded_file = None
+        if remaining_slots > 0:
+            uploaded_file = st.file_uploader(
+                f"Or upload your own reference image ({remaining_slots} slot(s) left, optional)",
+                type=["jpg", "jpeg", "png"],
+            )
+        else:
+            st.info("You've selected 5 images — deselect one if you want to upload your own instead.")
+
         user_uploaded_path = None
         if uploaded_file:
             user_uploaded_path = f"storage/raw_images/upload_{uploaded_file.name}"
@@ -70,6 +79,11 @@ class BookCoverApp:
                 f.write(uploaded_file.getbuffer())
 
         if st.button("Proceed"):
+            total_references = len(selected_paths) + (1 if user_uploaded_path else 0)
+            if total_references > 5:
+                st.error("You can use a maximum of 5 references total (selected images + upload). Please deselect one.")
+                return
+
             resumed = st.session_state.runner.resume(
                 st.session_state.thread_id,
                 {
@@ -80,12 +94,28 @@ class BookCoverApp:
             )
             st.session_state.final_result = resumed
             st.rerun()
-
     def _render_result_stage(self):
-        st.subheader("Workflow complete")
-        branch = st.session_state.final_result["state"].get("feedback_branch", "unknown")
-        st.write(f"Routed branch: **{branch}**")
-        st.json(st.session_state.final_result["state"])
+        st.subheader("Your book cover is ready")
+
+        state = st.session_state.final_result["state"]
+        branch = state.get("feedback_branch", "unknown")
+        cover_path = state.get("generated_cover_path")
+
+        st.caption(f"Routed branch: {branch}")
+
+        if cover_path:
+            st.image(cover_path, caption="Generated cover", width=400)
+        else:
+            st.warning("Generation did not produce an image. Check logs for details.")
+
+        with st.expander("Generation prompt used"):
+            st.write(state.get("generation_prompt", "N/A"))
+
+        with st.expander("Image descriptions (captions)"):
+            st.json(state.get("image_descriptions", {}))
+
+        with st.expander("Full raw state (debug)"):
+            st.json(state)
 
         if st.button("Start over"):
             st.session_state.thread_id = None
