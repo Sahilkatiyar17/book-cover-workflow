@@ -63,9 +63,9 @@ class GenerationConfig:
 class ImageUnderstandingConfig:
     """Tunables for the image captioning/understanding step."""
     MODEL_ID = "qwen/qwen3.6-27b"
-    MAX_TOKENS = 1500
-    CAPTION_PROMPT = "Describe this image in detail, including subject, mood, color palette, and composition."
-    MAX_IMAGES_TO_DESCRIBE = 3
+    MAX_TOKENS = 1800
+    CAPTION_PROMPT = "Describe this image as a visual reference for designing a book cover. Focus on the main subject, background, mood, atmosphere, color palette, lighting, composition, focal point, artistic style, textures, perspective, and any distinctive visual elements or symbols. Also mention any clear areas of negative space suitable for placing a book title or author name. Write one detailed, objective paragraph describing only what is visible in the image."
+    MAX_IMAGES_TO_DESCRIBE = 5
     
 class SummarizationConfig:
     """Tunables for the prompt-summarization step."""

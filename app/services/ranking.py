@@ -4,21 +4,18 @@ import numpy as np
 import torch
 from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
-
+from groq import Groq
 from app.utils.constants import GraphConfig
 from app.utils.exception import AgentException
 from app.utils.logger import logging
 
+from app.utils.config import get_settings
+
 logger = logging.getLogger(__name__)
 
+groq_client = Groq(api_key=get_settings().groq_api_key_1)
 
 class ClipEmbedder:
-    """
-    Wraps a CLIP model to embed both text queries and images into the same vector space.
-    Loaded once per process — model loading is expensive, so this should be instantiated
-    once and reused, not recreated per call.
-    """
-
     def __init__(self, model_name: str = "openai/clip-vit-base-patch32"):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = CLIPModel.from_pretrained(model_name).to(self.device)
@@ -26,7 +23,16 @@ class ClipEmbedder:
         logger.info(f"CLIP model '{model_name}' loaded on {self.device}")
 
     def embed_text(self, text: str) -> np.ndarray:
-        inputs = self.processor(text=[text], return_tensors="pt", padding=True).to(self.device)
+        # Summarize long prompts so CLIP (77-token limit) doesn't truncate/crash
+        if len(text.split()) > 50:
+            summary = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": f"Summarize this image prompt in under 60 words, keeping all key visual details: {text}"}],
+                temperature=0.3,
+            )
+            text = summary.choices[0].message.content.strip()
+
+        inputs = self.processor(text=[text], return_tensors="pt", padding=True, truncation=True).to(self.device)
         with torch.no_grad():
             features = self.model.get_text_features(**inputs)
         return features.cpu().numpy()[0]
@@ -34,13 +40,12 @@ class ClipEmbedder:
     def embed_image(self, image_path: str) -> np.ndarray:
         try:
             image = Image.open(image_path).convert("RGB")
-            inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+            inputs = self.processor(images=image, return_tensors="pt", truncation=True).to(self.device)
             with torch.no_grad():
                 features = self.model.get_image_features(**inputs)
             return features.cpu().numpy()[0]
         except Exception as e:
             raise AgentException(e, sys) from e
-
 
 class EmbeddingCache:
     """

@@ -109,3 +109,20 @@ class GraphRunner:
             CheckpointerFactory.clear_thread(self.builder.checkpointer, thread_id)
         else:
             logger.info(f"Thread {thread_id} paused (human-in-the-loop) — checkpoint preserved")
+    
+    def run_stream(self, initial_state: dict, thread_id: str = None):
+        """Yields (node_name, state_update) as each node completes. Generator."""
+        thread_id = thread_id or str(uuid.uuid4())
+        config = {"configurable": {"thread_id": thread_id}}
+        for step in self.graph.stream(initial_state, config=config):
+            for node_name, update in step.items():
+                yield thread_id, node_name, update
+        self._cleanup_if_complete(thread_id, config)
+
+    def resume_stream(self, thread_id: str, resume_payload: dict):
+        """Yields (node_name, state_update) as each node completes after resume. Generator."""
+        config = {"configurable": {"thread_id": thread_id}}
+        for step in self.graph.stream(Command(resume=resume_payload), config=config):
+            for node_name, update in step.items():
+                yield node_name, update
+        self._cleanup_if_complete(thread_id, config)

@@ -89,7 +89,7 @@ class GroqVLProvider(ImageUnderstandingProvider):
 class ImageUnderstandingNode:
     def __init__(self):
         self.provider = GroqVLProvider()
-        self.request_delay_seconds = 2  # pacing between calls, avoids tripping Groq's rate limit
+        self.request_delay_seconds = 5  # pacing between calls, avoids tripping Groq's rate limit
 
     def __call__(self, state: dict) -> dict:
         image_paths = list(state.get("selected_images", []))

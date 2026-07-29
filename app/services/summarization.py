@@ -20,7 +20,7 @@ class GroqSummarizerProvider:
     """
 
     def __init__(self):
-        self.client = Groq(api_key=get_settings().groq_api_key)
+        self.client = Groq(api_key=get_settings().groq_api_key_1)
         self.model_name = SummarizationConfig.MODEL_ID
 
     def summarize(self, text: str) -> str | None:
@@ -61,7 +61,7 @@ class SummarizationNode:
 
         combined_text = (
             "Summarize the following into a single, concise, vivid book cover generation prompt "
-            "under 1000 words. Preserve the theme, mood, and specific user preferences:\n\n"
+            "under 3000 words. Preserve the theme, mood, and specific user preferences:\n\n"
             + "\n".join(combined_lines)
         )
 

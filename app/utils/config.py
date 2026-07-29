@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # LLM providers
     groq_api_key: str
+    groq_api_key_1 : str
     groq_model: str = "llama-3.3-70b-versatile"
     nvidia_api_key: str = ""
     gemini_api_key: str = ""
